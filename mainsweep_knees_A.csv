@@ -1,0 +1,55 @@
+# run_matrix.py
+# Original parameter-sweep driver for forest_fire.py. Retained for provenance.
+# The results reported in the paper come from runner.py + ff_fast.py, which fix
+# the shared-RNG issue described in forest_fire.py's header.
+import os, itertools, json, time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import forest_fire as ff
+
+THETA_LIST         = [250, 500, 1000, 2000, 3000]
+N_LIST             = [128, 256, 512, 1024]   # grow as your rig allows
+DENSITIES_T        = [0.50, 0.55, 0.60]
+DISTRIBUTIONS      = ["uniform", "clustered", "stripes", "gradient"]
+SEEDS              = [42, 43]
+
+TOTAL_LIGHTNINGS   = 200_000
+TRANSIENT_FRACTION = 0.20
+
+LEAVE_CORES_FOR_OS = 2
+MAX_WORKERS = min(max(1, (os.cpu_count() or 16) - LEAVE_CORES_FOR_OS), 16)
+
+def one_run(theta, N, t, dist, seed):
+    cfg = ff.RunConfig(
+        N=N, theta=int(theta),
+        initial_density_t=float(t), distribution=dist,
+        total_lightnings=TOTAL_LIGHTNINGS, transient_fraction=TRANSIENT_FRACTION,
+        seed=int(seed),
+    )
+    ff.run_simulation(cfg)
+    return dict(theta=theta, N=N, t=t, dist=dist, seed=seed)
+
+def main():
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
+    grid = list(itertools.product(THETA_LIST, N_LIST, DENSITIES_T, DISTRIBUTIONS, SEEDS))
+    t0 = time.time()
+    ok, fail = [], []
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(one_run, *g): g for g in grid}
+        for fut in as_completed(futs):
+            g = futs[fut]
+            try:
+                ok.append(fut.result())
+                print("[OK]  ", g)
+            except Exception as e:
+                fail.append({"args": g, "error": str(e)})
+                print("[FAIL]", g, e)
+    os.makedirs("results", exist_ok=True)
+    with open("results/run_matrix_summary.json", "w") as f:
+        json.dump({"ok": ok, "fail": fail, "sec": time.time() - t0}, f, indent=2)
+    print(f"[DONE] {len(ok)} ok, {len(fail)} failed in {time.time()-t0:.1f}s")
+
+if __name__ == "__main__":
+    main()
